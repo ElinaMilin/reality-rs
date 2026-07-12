@@ -68,6 +68,7 @@ RELEASE_BASE_URL="${RELEASE_BASE_URL%/}"
 [[ ${ID:-} == "debian" || ${ID_LIKE:-} == *"debian"* ]] || die "this installer supports Debian-family systems only"
 [[ $(uname -m) == "x86_64" || $(uname -m) == "amd64" ]] || die "this release supports x86_64 only"
 command -v systemctl >/dev/null || die "systemd is required"
+command -v python3 >/dev/null || { apt-get update; apt-get install -y python3; }
 [[ $LISTEN =~ ^[A-Za-z0-9.:[\]-]+$ ]] || die "invalid listen address"
 
 if [[ -z $BINARY_SOURCE ]]; then
@@ -90,6 +91,7 @@ if [[ -z $BINARY_SOURCE && -n $RELEASE_BASE_URL ]]; then
   curl --fail --location --proto '=https' --tlsv1.2 "$RELEASE_BASE_URL/reality-rs-linux-amd64" -o "$BINARY_SOURCE"
   curl --fail --location --proto '=https' --tlsv1.2 "$RELEASE_BASE_URL/reality-rs-linux-amd64.sha256" -o "$TMP_DIR/reality-rs-linux-amd64.sha256"
   curl --fail --location --proto '=https' --tlsv1.2 "$RELEASE_BASE_URL/reality-rs.service" -o "$TMP_DIR/reality-rs.service"
+  curl --fail --location --proto '=https' --tlsv1.2 "$RELEASE_BASE_URL/reality-rsctl" -o "$TMP_DIR/reality-rsctl"
   EXPECTED_SHA256="$(awk 'NR==1 { print $1 }' "$TMP_DIR/reality-rs-linux-amd64.sha256")"
 fi
 [[ -n $BINARY_SOURCE && -f $BINARY_SOURCE ]] || die "release binary not found; use --binary or --release-base-url"
@@ -105,12 +107,16 @@ fi
 UNIT_SOURCE="$SCRIPT_DIR/packaging/reality-rs.service"
 [[ -f $UNIT_SOURCE ]] || UNIT_SOURCE="${TMP_DIR:-}/reality-rs.service"
 [[ -f $UNIT_SOURCE ]] || die "systemd unit file not found"
+CTL_SOURCE="$SCRIPT_DIR/packaging/reality-rsctl"
+[[ -f $CTL_SOURCE ]] || CTL_SOURCE="${TMP_DIR:-}/reality-rsctl"
+[[ -f $CTL_SOURCE ]] || die "management tool not found"
 
 note "Installing ${APP}"
 install -d -m 0750 -o root -g root "$INSTALL_DIR"
 id -u "$APP" >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin "$APP"
 install -m 0755 -o root -g root "$BINARY_SOURCE" "$BIN_PATH"
 install -m 0644 -o root -g root "$UNIT_SOURCE" "$UNIT_PATH"
+install -m 0755 -o root -g root "$CTL_SOURCE" /usr/local/bin/reality-rsctl
 
 if [[ ! -f "$INSTALL_DIR/config.json" || $FORCE_CONFIG -eq 1 ]]; then
   if [[ -f "$INSTALL_DIR/config.json" ]]; then
