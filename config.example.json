@@ -1,0 +1,11 @@
+{
+  "listen": "0.0.0.0:443",
+  "users": ["00000000-0000-0000-0000-000000000000"],
+  "reality": {
+    "private_key": "REPLACE_WITH_KEYGEN_PRIVATE_KEY",
+    "server_names": ["www.example.com"],
+    "short_ids": ["0123456789abcdef"],
+    "max_time_diff_secs": 600,
+    "fallback": "www.example.com:443"
+  }
+}

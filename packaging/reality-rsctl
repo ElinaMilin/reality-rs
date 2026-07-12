@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Interactive manager for a reality-rs Debian installation.
+set -Eeuo pipefail
+
+APP="reality-rs"
+CONFIG="/etc/${APP}/config.json"
+CLIENT_FILE="/root/${APP}-v2rayn.txt"
+SERVICE="${APP}.service"
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+need_root() { [[ $EUID -eq 0 ]] || die "run as root (for example: sudo reality-rsctl config)"; }
+need_config() { [[ -r $CONFIG ]] || die "configuration not found: $CONFIG"; }
+need_python() { command -v python3 >/dev/null || die "python3 is required for configuration changes"; }
+
+value() {
+  need_python
+  python3 - "$CONFIG" "$1" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+key = sys.argv[2]
+values = {
+    "listen": data["listen"],
+    "uuid": data["users"][0],
+    "sni": data["reality"]["server_names"][0],
+    "sid": data["reality"]["short_ids"][0],
+    "fallback": data["reality"]["fallback"],
+}
+print(values[key])
+PY
+}
+
+show_status() { systemctl --no-pager --full status "$SERVICE" || true; }
+show_logs() { journalctl -u "$SERVICE" -n 100 --no-pager; }
+show_client() { [[ -r $CLIENT_FILE ]] || die "client file not found: $CLIENT_FILE"; cat "$CLIENT_FILE"; }
+
+configure() {
+  need_root; need_config; need_python
+  local listen sni fallback uuid sid backup
+  listen="$(value listen)"; sni="$(value sni)"; fallback="$(value fallback)"
+  uuid="$(value uuid)"; sid="$(value sid)"
+  printf 'Press Enter to keep the current value.\n\n'
+  read -r -p "Listen address [$listen]: " answer; listen="${answer:-$listen}"
+  read -r -p "REALITY SNI [$sni]: " answer; sni="${answer:-$sni}"
+  read -r -p "Fallback host:port [$fallback]: " answer; fallback="${answer:-$fallback}"
+  read -r -p "VLESS UUID [$uuid]: " answer; uuid="${answer:-$uuid}"
+  read -r -p "REALITY short ID [$sid]: " answer; sid="${answer:-$sid}"
+
+  [[ $listen =~ ^[A-Za-z0-9.:[\]-]+$ ]] || die "invalid listen address"
+  [[ $sni =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid SNI"
+  [[ $fallback =~ ^[A-Za-z0-9.:-]+$ ]] || die "invalid fallback address"
+  [[ $uuid =~ ^[0-9a-fA-F-]{36}$ ]] || die "invalid UUID"
+  [[ $sid =~ ^[0-9a-fA-F]{16}$ ]] || die "short ID must be 16 hexadecimal characters"
+
+  backup="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
+  cp -a "$CONFIG" "$backup"
+  python3 - "$CONFIG" "$listen" "$sni" "$fallback" "$uuid" "$sid" <<'PY'
+import json, os, sys, tempfile
+path, listen, sni, fallback, uuid, sid = sys.argv[1:]
+with open(path) as f:
+    data = json.load(f)
+data["listen"] = listen
+data["users"] = [uuid]
+data["reality"]["server_names"] = [sni]
+data["reality"]["fallback"] = fallback
+data["reality"]["short_ids"] = [sid]
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".config.")
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.chmod(tmp, 0o640)
+os.replace(tmp, path)
+PY
+  chown root:"$APP" "$CONFIG"
+  systemctl restart "$SERVICE"
+  systemctl is-active --quiet "$SERVICE" || { cp -a "$backup" "$CONFIG"; systemctl restart "$SERVICE"; die "restart failed; restored $backup"; }
+  printf 'Configuration updated. Backup: %s\n' "$backup"
+  printf 'Update your V2rayN UUID/SNI/short ID if any of those values changed.\n'
+}
+
+usage() {
+  cat <<'EOF'
+Usage: reality-rsctl [status|start|stop|restart|logs|show-client|config]
+
+Run without an argument for an interactive menu.
+EOF
+}
+
+menu() {
+  while true; do
+    cat <<'EOF'
+
+reality-rs management
+  1) Service status
+  2) Restart service
+  3) View recent logs
+  4) Show V2rayN details
+  5) Edit server configuration
+  0) Exit
+EOF
+    read -r -p 'Select: ' choice
+    case "$choice" in
+      1) show_status ;;
+      2) need_root; systemctl restart "$SERVICE"; printf 'Service restarted.\n' ;;
+      3) show_logs ;;
+      4) show_client ;;
+      5) configure ;;
+      0) return 0 ;;
+      *) printf 'Invalid selection.\n' ;;
+    esac
+  done
+}
+
+case "${1:-}" in
+  "") menu ;;
+  status) show_status ;;
+  start|stop|restart) need_root; systemctl "$1" "$SERVICE" ;;
+  logs) show_logs ;;
+  show-client) show_client ;;
+  config) configure ;;
+  -h|--help|help) usage ;;
+  *) usage; exit 2 ;;
+esac
